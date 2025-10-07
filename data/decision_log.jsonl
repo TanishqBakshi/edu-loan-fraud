@@ -1,0 +1,1 @@
+{"ts": 1759840805, "decision": {"applicant_id": "app_001", "score": 95.0, "risk_label": "HIGH", "reasons": [{"code": "DEVICE_MISMATCH", "explanation": "Fingerprint suspicious"}, {"code": "LOW_OCR", "explanation": "OCR confidence 68%"}], "model_version": "v0.0.1", "explainability": {"shap_values": {}}}}
