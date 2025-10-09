@@ -1,48 +1,66 @@
-// frontend/src/components/BehaviorCapture.tsx
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
-export default function BehaviorCapture({ sessionId }: { sessionId: string }) {
-  const wsRef = useRef<WebSocket | null>(null);
+/**
+ * BehaviorCapture component
+ * Props:
+ *  - sessionId?: string  (optional - if not provided we generate one)
+ *
+ * This component is a *lightweight demo-only* behavior capture stub:
+ * it does not send real keystroke streams to a backend here — it generates
+ * a demo session id and shows UI. The loan form will use this id when it
+ * sends a payload to backend (if needed).
+ */
+
+type Props = {
+  sessionId?: string;
+};
+
+function makeId() {
+  // short stable-like id using timestamp + random
+  return `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export default function BehaviorCapture(props: Props) {
+  // use passed id or generate one once
+  const session = useMemo(() => props.sessionId || makeId(), [props.sessionId]);
+
+  const [status] = useState<string>("active"); // simple placeholder state
+  const [consented, setConsented] = useState<boolean>(true);
 
   useEffect(() => {
-    // Use 127.0.0.1 to avoid hostname issues
-    const ws = new WebSocket("ws://127.0.0.1:8000/ws/behavior");
-    wsRef.current = ws;
-
-    ws.onopen = () => console.log("WS open");
-    ws.onmessage = (e) => console.log("WS msg:", e.data);
-    ws.onclose = () => console.log("WS closed");
-    ws.onerror = (ev) => console.warn("WS error", ev);
-
+    // If you want to expose the sessionId globally (for debug)
+    // window.__behavior_session = session; // avoid polluting in prod
     return () => {
-      try {
-        ws.close();
-      } catch {}
+      // cleanup if you later add event listeners
     };
-  }, []);
+  }, [session]);
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const ev = {
-        event_type: "keystroke",
-        user_id: sessionId,
-        timestamp: Date.now(),
-        payload: { key: e.key, event: e.type, time: Date.now(), downDuration: 0 },
-        client_meta: {
-          fingerprint_id: "fp_demo",
-          ua: navigator.userAgent,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        },
-      };
-      try {
-        wsRef.current?.send(JSON.stringify(ev));
-      } catch (err) {
-        // ignore send errors (disconnected)
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [sessionId]);
+  return (
+    <div style={{
+      background: "var(--panel)",
+      padding: 16,
+      borderRadius: 12,
+      marginBottom: 16,
+      boxShadow: "var(--card-shadow)"
+    }}>
+      <div style={{display: "flex", justifyContent: "space-between", alignItems: "center"}}>
+        <div>
+          <strong style={{fontSize: 15}}>Behavior capture {status === "active" ? "active" : "inactive"}</strong>
+          <div style={{opacity: 0.7, marginTop:6, fontSize:13}}>This demo only sends anonymized behavior summary to the local backend. Accept to continue.</div>
+        </div>
 
-  return <div style={{ margin: "12px 0" }}>Behavior capture active — type in the form to stream events.</div>;
+        <div style={{textAlign: "right"}}>
+          <div style={{fontSize:12, color: "var(--muted)"}}>Session</div>
+          <div style={{fontWeight:700}}>{session}</div>
+        </div>
+      </div>
+
+      <div style={{marginTop:12, display:"flex", gap:8, alignItems:"center"}}>
+        <label style={{display:"flex", alignItems:"center", gap:8, cursor:"pointer"}}>
+          <input type="checkbox" checked={consented} onChange={() => setConsented(s => !s)} />
+          <span style={{fontSize:13}}>I consent to demo behavior capture</span>
+        </label>
+      </div>
+    </div>
+  );
 }

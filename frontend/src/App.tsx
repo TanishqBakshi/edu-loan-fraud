@@ -1,45 +1,54 @@
-// frontend/src/App.tsx
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import BehaviorCapture from "./components/BehaviorCapture";
+import LoanForm from "./components/LoanForm";
+import ResultCard from "./components/ResultCard";
 import "./App.css";
 
-function App() {
-  const [consent, setConsent] = useState(false);
-  const sessionId = "temp_session_" + Math.random().toString(36).slice(2, 9);
+export default function App() {
+  const [result, setResult] = useState<any | null>(null);
+
+  useEffect(() => {
+    // Listen for result updates from LoanForm
+    function handleScoreEvent(e: any) {
+      setResult(e.detail);
+    }
+
+    window.addEventListener("scoreResult", handleScoreEvent);
+
+    // Load last score if available
+    const last = localStorage.getItem("last_score");
+    if (last) {
+      try {
+        setResult(JSON.parse(last));
+      } catch {}
+    }
+
+    return () => {
+      window.removeEventListener("scoreResult", handleScoreEvent);
+    };
+  }, []);
 
   return (
-    <div style={{ padding: 24, fontFamily: "Inter, Arial, sans-serif" }}>
-      <h1>Student Loan Application — Demo</h1>
+    <div className="App dark">
+      <header>
+        <h1>Student Loan Application — Demo (Dark)</h1>
+      </header>
 
-      {!consent ? (
-        <div>
-          <p>
-            To speed up verification we capture typing & mouse behavior. This is a demo — accept to continue.
-          </p>
-          <button onClick={() => setConsent(true)} style={{ padding: "8px 14px", borderRadius: 6 }}>
-            I consent
-          </button>
+      <main style={{ display: "flex", justifyContent: "center", padding: "40px" }}>
+        <div style={{ flex: 1, maxWidth: 600 }}>
+          <BehaviorCapture />
+          <LoanForm onResult={setResult} />
         </div>
-      ) : (
-        <>
-          <BehaviorCapture sessionId={sessionId} />
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              alert("Application submitted (demo). Use curl to POST to /score for scoring.");
-            }}
-            style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12, maxWidth: 420 }}
-          >
-            <input name="name" placeholder="Full name" required />
-            <input name="email" placeholder="Email" type="email" required />
-            <button type="submit" style={{ padding: "8px 12px", borderRadius: 6 }}>
-              Submit Application
-            </button>
-          </form>
-        </>
-      )}
+
+        <aside style={{ width: 420, marginLeft: 24 }}>
+          <ResultCard result={result} />
+        </aside>
+      </main>
+
+      <footer style={{ textAlign: "center", padding: "16px", opacity: 0.6 }}>
+        Local demo — connect backend at{" "}
+        <code>http://localhost:8000</code>
+      </footer>
     </div>
   );
 }
-
-export default App;

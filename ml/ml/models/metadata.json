@@ -1,0 +1,18 @@
+{
+  "created_at": 1760008969,
+  "model_versions": {
+    "lr": "1760008969",
+    "rf": "1760008969",
+    "autoencoder": "1760008969",
+    "isoforest": "1760008969"
+  },
+  "feature_columns": [
+    "avg_hold_time",
+    "std_hold",
+    "backspace_freq",
+    "interkey_mean",
+    "mouse_jitter",
+    "ocr_confidence",
+    "device_fp_sim"
+  ]
+}

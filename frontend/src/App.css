@@ -1,31 +1,3 @@
-/* frontend/src/App.css */
-body {
-  margin: 0;
-  font-family: Inter, Arial, sans-serif;
-  background: #f7f8fb;
-  color: #1f2937;
-}
-.app-container {
-  padding: 24px;
-  max-width: 900px;
-  margin: 24px auto;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.05);
-}
-input {
-  padding: 8px;
-  margin-top: 6px;
-  border-radius: 6px;
-  border: 1px solid #ddd;
-  width: 100%;
-  box-sizing: border-box;
-}
-button {
-  cursor: pointer;
-  padding: 8px 12px;
-  border-radius: 6px;
-  background: #0b74ff;
-  color: white;
-  border: none;
-}
+body { margin: 0; font-family: Inter, Arial, sans-serif; }
+input { padding: 8px; margin-top: 6px; border-radius: 6px; border: 1px solid #ddd; display:block; width: 400px; }
+button { cursor: pointer; padding: 10px 16px; border-radius: 8px; background:#0b64d6; color:white; border:none; margin-top:12px; }
