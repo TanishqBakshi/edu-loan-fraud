@@ -1,0 +1,16 @@
+body { margin: 0; font-family: Inter, Arial, sans-serif; }
+.list { border: 1px solid #eee; padding: 8px; border-radius: 8px; max-height: 70vh; overflow:auto; }
+.row { display:flex; align-items:center; gap:12px; padding: 8px; border-bottom: 1px solid #f4f4f4; }
+.row:hover { background:#fafafa; }
+.badge { padding: 4px 8px; border-radius: 6px; color: white; display:inline-block; font-weight:700; }
+.badge.LOW { background: #10b981; }
+.badge.MEDIUM { background: #f59e0b; }
+.badge.HIGH { background: #ef4444; }
+.score { font-size: 14px; color: #333; margin-top:4px; }
+.shap-bars { margin-top: 8px; }
+.shap-row { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.shap-name { width: 160px; font-family: monospace; }
+.shap-bar-wrap { display:flex; align-items:center; gap:8px; flex:1; }
+.shap-bar { height: 10px; border-radius: 6px; }
+.shap-value { width: 60px; text-align:right; font-family: monospace; color:#444; }
+.no-shap { color:#777; font-size:14px; }

@@ -1,0 +1,21 @@
+{
+  "models": {
+    "rf": {
+      "auc": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "acc": 1.0,
+      "path": "ml/models/rf.joblib"
+    },
+    "lr": {
+      "auc": 0.8757954794821153,
+      "precision": 0.7407407407407407,
+      "recall": 0.6451612903225806,
+      "f1": 0.6896551724137931,
+      "acc": 0.775,
+      "path": "ml/models/lr.joblib"
+    }
+  },
+  "version": "v0.1.0"
+}
