@@ -1,37 +1,337 @@
-:root{
-    --bg:#0f1115;
-    --panel:#111217;
-    --muted:#98a0b3;
-    --accent:#1766ff;
-    --accent-2:#7b61ff;
-    --card-shadow: 0 6px 30px rgba(0,0,0,0.6);
-    --glass: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
-    color-scheme: dark;
+/* styles.css
+   Frontend UI polish for Edu Loan Application demo
+   Paste this entire file into frontend/src/styles.css (replace current contents).
+   Designed to be additive — uses common tags & utility classes so existing markup
+   should pick up the visual improvements automatically.
+*/
+
+/* -----------------
+   Design tokens
+   ----------------- */
+   :root{
+    /* palette */
+    --bg: #0f1113;
+    --panel: #0f1315;
+    --panel-2: #121417;
+    --muted: #9aa3ad;
+    --muted-2: #6f777e;
+    --accent-1: #4f6bff; /* primary gradient start */
+    --accent-2: #7a50ff; /* primary gradient end */
+    --success: #2dd4bf;
+    --danger: #ff6b6b;
+    --glass: rgba(255,255,255,0.02);
+  
+    /* typography */
+    --font-sans: Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --radius: 12px;
+    --card-radius: 14px;
+    --shadow-1: 0 6px 18px rgba(2,6,10,0.55);
+    --shadow-2: 0 12px 40px rgba(2,6,10,0.65);
+  
+    /* micro timings */
+    --fast: 120ms;
+    --medium: 240ms;
+    --slow: 420ms;
   }
   
-  body,html,#root{height:100%;margin:0;background:var(--bg);font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,'Helvetica Neue',Arial}
+  /* -----------------
+     Global reset + layout
+     ----------------- */
+  *{box-sizing:border-box}
+  html,body,#root{height:100%}
+  body{
+    margin:0;
+    min-height:100%;
+    background: linear-gradient(180deg, var(--bg) 0%, #0b0c0d 100%);
+    color:#e6eef6;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing:antialiased;
+    -moz-osx-font-smoothing:grayscale;
+    line-height:1.4;
+    letter-spacing:0.1px;
+    font-size:15px;
+  }
   
-  .app-root{min-height:100%;display:flex;flex-direction:column}
-  .topbar{height:64px;background:linear-gradient(90deg,#0b0c0f, #0f1014);display:flex;align-items:center;padding:0 24px;box-shadow:0 1px 0 rgba(255,255,255,0.02)}
-  .logo{color:#fff;font-weight:600}
-  .main{flex:1;padding:28px 36px;max-width:1200px;margin:0 auto}
-  .title{color:#e6eef8;margin:6px 0 18px;font-size:28px}
+  /* small helpers */
+  .container {
+    max-width:1160px;
+    margin: 0 auto;
+    padding: 28px;
+  }
   
-  .card{background:var(--panel);border-radius:12px;padding:18px;box-shadow:var(--card-shadow);border:1px solid rgba(255,255,255,0.03);color:#dbe7ff}
-  .consent-card{max-width:720px;padding:24px}
-  .btn{padding:10px 16px;border-radius:8px;border:0;cursor:pointer;font-weight:600}
-  .btn.primary{background:linear-gradient(90deg,var(--accent),var(--accent-2));color:white;box-shadow:0 6px 24px rgba(23,102,255,0.14)}
-  .btn.ghost{background:transparent;border:1px solid rgba(255,255,255,0.04);color:var(--muted)}
+  /* headings */
+  h1, h2, h3 { margin:0 0 12px 0; font-weight:700; }
+  h1 { font-size:34px; color: #fff; }
+  h2 { font-size:20px; color:#f1f6fb; }
   
-  .form{display:flex;flex-direction:column;gap:8px}
-  .input{background:transparent;border:1px solid rgba(255,255,255,0.04);padding:12px;border-radius:10px;color:#eaf0ff}
-  .label{color:var(--muted);font-size:13px;margin-bottom:4px}
-  .footer{padding:12px 36px;color:var(--muted);font-size:13px}
+  /* -----------------
+     Card / Panel styles
+     ----------------- */
+  .card {
+    background: linear-gradient(180deg, rgba(255,255,255,0.012), rgba(255,255,255,0.008));
+    border-radius: var(--card-radius);
+    padding: 20px;
+    box-shadow: var(--shadow-1);
+    border: 1px solid rgba(255,255,255,0.03);
+    transition: transform var(--medium) ease, box-shadow var(--medium) ease, background var(--medium) ease;
+  }
   
-  .big-score{font-size:40px;font-weight:700;color:var(--accent);margin-top:6px}
-  .risk{color:var(--muted);margin-top:6px}
-  .result .error{color:#ff6b6b}
+  /* hover lift */
+  .card:hover {
+    transform: translateY(-6px);
+    box-shadow: var(--shadow-2);
+  }
   
-  .card.result ul{margin:8px 0 0 16px;color:#d0d8ee}
-  code{background:rgba(255,255,255,0.03);padding:2px 6px;border-radius:6px;font-size:12px}
+  /* special smaller panels (status, result) */
+  .card--compact { padding: 14px; }
   
+  /* subtle divider */
+  .hr {
+    height:1px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    margin: 14px 0;
+    border-radius: 2px;
+  }
+  
+  /* -----------------
+     Forms: inputs, labels, textarea
+     ----------------- */
+  label { display:block; color:var(--muted); margin-bottom:8px; font-weight:600; }
+  input[type="text"], input[type="email"], input[type="tel"], input[type="date"], textarea {
+    display:block;
+    width:100%;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.06);
+    color: #e8f0fb;
+    outline: none;
+    transition: box-shadow var(--fast), border-color var(--fast), transform var(--fast);
+    font-size: 14px;
+  }
+  
+  /* focus ring */
+  input:focus, textarea:focus {
+    box-shadow: 0 4px 18px rgba(79,107,255,0.14);
+    border-color: rgba(79,107,255,0.95);
+    transform: translateY(-1px);
+  }
+  
+  /* placeholder color */
+  ::placeholder { color: rgba(255,255,255,0.25); }
+  
+  /* grouped form card */
+  .form-card .card { padding: 26px; }
+  
+  /* small helper text */
+  .help { color: var(--muted); font-size:13px; margin-top:8px }
+  
+  /* -----------------
+     Buttons
+     ----------------- */
+  .btn {
+    display:inline-flex;
+    align-items:center;
+    gap:10px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-weight:700;
+    cursor:pointer;
+    border: none;
+    user-select:none;
+    transition: transform var(--fast), box-shadow var(--fast), opacity var(--fast);
+  }
+  
+  /* primary gradient button */
+  .btn--primary {
+    background: linear-gradient(90deg, var(--accent-1), var(--accent-2));
+    color: white;
+    box-shadow: 0 8px 28px rgba(82,80,255,0.16);
+  }
+  
+  /* ghost / outline */
+  .btn--secondary {
+    background: transparent;
+    color: var(--muted-2);
+    border: 1px solid rgba(255,255,255,0.04);
+  }
+  
+  /* hover/active */
+  .btn--primary:hover { transform: translateY(-2px) scale(1.01); opacity:0.98; }
+  .btn--primary:active { transform: translateY(0); opacity:0.94; }
+  .btn--secondary:hover { transform: translateY(-1px); }
+  
+  /* disabled */
+  .btn[disabled] { opacity: 0.5; pointer-events:none; transform:none; }
+  
+  /* small link-like button */
+  .btn--link { background: transparent; color: var(--accent-1); font-weight:600; padding:6px; }
+  
+  /* -----------------
+     Badges, chips, small UI
+     ----------------- */
+  .badge {
+    display:inline-block;
+    padding:6px 9px;
+    border-radius:999px;
+    background: rgba(255,255,255,0.03);
+    color: var(--muted);
+    font-weight:700;
+    font-size:13px;
+    border: 1px solid rgba(255,255,255,0.02);
+  }
+  
+  /* fingerprint chip */
+  .chip {
+    background: rgba(255,255,255,0.02);
+    color: #d6e5ff;
+    padding: 6px 8px;
+    border-radius: 7px;
+    font-weight:600;
+    border: 1px solid rgba(255,255,255,0.03);
+  }
+  
+  /* status */
+  .status-ok { color: var(--success); font-weight:700; }
+  .status-bad { color: var(--danger); font-weight:700; }
+  
+  /* right aligned key/value */
+  .kv { display:flex; align-items:center; gap:8px; justify-content:flex-end; color:var(--muted); font-size:13px; }
+  
+  /* -----------------
+     Cards layout (two-column main area)
+     ----------------- */
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 420px;
+    gap: 24px;
+    align-items:start;
+  }
+  
+  /* responsive */
+  @media (max-width: 980px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+  
+  /* -----------------
+     Result card visual improvements
+     ----------------- */
+  .result-score {
+    font-size: 40px;
+    font-weight: 800;
+    line-height: 1;
+    margin: 0 0 10px 0;
+    color: #fff;
+  }
+  
+  .result-reasons {
+    margin-top: 12px;
+    list-style: disc;
+    margin-left: 18px;
+    color: #f7f6f8;
+  }
+  
+  .result-raw {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Courier New", monospace;
+    font-size: 13px;
+    background: rgba(255,255,255,0.02);
+    padding: 12px;
+    border-radius: 10px;
+    color: #c9d7ef;
+    border: 1px solid rgba(255,255,255,0.02);
+  }
+  
+  /* -----------------
+     Micro-animations: entrance & pulse
+     ----------------- */
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes pulse {
+    0% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.02); opacity: 0.96; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  
+  .animated { animation: fadeInUp var(--slow) cubic-bezier(.22,.9,.28,1) both; }
+  .pulse { animation: pulse 2.4s ease-in-out infinite; }
+  
+  /* subtle shimmering top header */
+  .header {
+    padding: 18px 28px;
+    border-bottom: 1px solid rgba(255,255,255,0.02);
+    background: linear-gradient(180deg, rgba(255,255,255,0.01), transparent);
+  }
+  
+  /* small fingerprint/status area */
+  .status-row {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap: 16px;
+  }
+  .status-left { color: var(--muted); }
+  .status-right { display:flex; gap:12px; align-items:center; }
+  
+  /* WS badge that changes color when connected */
+  .ws-badge {
+    padding: 6px 10px;
+    border-radius: 10px;
+    font-weight:700;
+    font-size:13px;
+    border:1px solid rgba(255,255,255,0.03);
+  }
+  .ws-badge.ok { color: #0f5132; background: rgba(45,212,191,0.08); border-color: rgba(45,212,191,0.12); }
+  .ws-badge.off { color: #ff9b1f; background: rgba(255,155,31,0.06); border-color: rgba(255,155,31,0.10); }
+  
+  /* -----------------
+     Error display (red)
+     ----------------- */
+  .error-pre {
+    margin-top: 18px;
+    color: var(--danger);
+    font-weight:700;
+    font-size:14px;
+    word-break:break-word;
+  }
+  
+  /* -----------------
+     Table / list in officer dashboard (basic)
+     ----------------- */
+  .table {
+    width:100%;
+    border-collapse:collapse;
+    font-size:14px;
+  }
+  .table th, .table td {
+    text-align:left;
+    padding: 12px 10px;
+    border-bottom: 1px dashed rgba(255,255,255,0.02);
+  }
+  .table th { color: var(--muted); font-weight:700; font-size:13px; }
+  
+  /* -----------------
+     Utility spacing
+     ----------------- */
+  .mt-8 { margin-top:8px }
+  .mt-12 { margin-top:12px }
+  .mb-12 { margin-bottom:12px }
+  .p-12 { padding:12px }
+  
+  /* -----------------
+     Small accessibility tweaks
+     ----------------- */
+  :focus { outline: none; }
+  a { color: var(--accent-1); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  
+  /* -----------------
+     Tiny responsiveness & niceties
+     ----------------- */
+  @media (max-width: 680px){
+    .btn { width:100%; justify-content:center; }
+    .container { padding: 18px; }
+  }
+  
+  /* finished */
