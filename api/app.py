@@ -4,14 +4,15 @@ import json
 import time
 import sqlite3
 import traceback
-from typing import Any, Dict, List, Optional, Tuple
 import uuid
+from typing import Any, Dict, List, Optional, Set, Callable, Coroutine
 
 from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import joblib
 import numpy as np
+import asyncio
 
 # -------------------
 # Config
@@ -27,7 +28,7 @@ os.makedirs(DB_DIR, exist_ok=True)
 # -------------------
 # App setup
 # -------------------
-app = FastAPI(title="Edu Loan Fraud - API (with persistence)")
+app = FastAPI(title="Edu Loan Fraud - API (with persistence + WS)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -168,6 +169,47 @@ def load_models_and_metadata():
             pass
 
 # -------------------
+# Simple in-memory broadcaster for WebSocket
+# -------------------
+class Broadcaster:
+    """
+    Very small in-process broadcaster. Keeps active websocket connections and
+    allows broadcasting JSON messages to all connections.
+    This is for demo/local use only (not for multi-process production).
+    """
+    def __init__(self):
+        self._connections: Set[WebSocket] = set()
+        self._lock = asyncio.Lock()
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        async with self._lock:
+            self._connections.add(websocket)
+
+    async def disconnect(self, websocket: WebSocket):
+        async with self._lock:
+            if websocket in self._connections:
+                self._connections.remove(websocket)
+
+    async def send_json(self, message: Dict[str, Any]):
+        # Send to all connections, remove closed ones
+        async with self._lock:
+            conns = list(self._connections)
+        to_remove: List[WebSocket] = []
+        for ws in conns:
+            try:
+                await ws.send_json(message)
+            except Exception:
+                to_remove.append(ws)
+        if to_remove:
+            async with self._lock:
+                for ws in to_remove:
+                    if ws in self._connections:
+                        self._connections.remove(ws)
+
+broadcaster = Broadcaster()
+
+# -------------------
 # Small feature extraction helper
 # -------------------
 def simple_extract_features_from_events(events: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -217,7 +259,7 @@ def simple_extract_features_from_events(events: List[Dict[str, Any]]) -> Dict[st
 # -------------------
 # Utilities: attempt to build an ordered ndarray for model predict
 # -------------------
-def build_feature_vector_from_input(raw_input: Dict[str, Any], extracted_feats: Dict[str, Any]) -> Tuple[Optional[np.ndarray], Optional[Dict[str, Any]]]:
+def build_feature_vector_from_input(raw_input: Dict[str, Any], extracted_feats: Dict[str, Any]) -> (Optional[np.ndarray], Optional[Dict[str, Any]]):
     """
     Use metadata['feature_columns'] if present; otherwise create a small vector from `extracted_feats`.
     Returns (vector_or_None, features_dict_used)
@@ -293,98 +335,6 @@ class ScoreRequest(BaseModel):
 def health():
     return {"status": "ok", "models_loaded": list(models.keys()), "metadata": bool(metadata)}
 
-# -------------------
-# Minimal behavior capture endpoints (start + websocket)
-# -------------------
-
-# in-memory store for captured event lists per session id
-# Note: for the demo we use memory; for production persist to DB or buffer/store
-behavior_store: Dict[str, List[Dict[str, Any]]] = {}
-
-@app.post("/behavior/start")
-async def behavior_start(request: Request):
-    """
-    Start a behavior capture session.
-    Frontend sends a POST to this to acquire a session_id to open websocket.
-    Returns: { session_id: "...", ws_url: "ws://..." }.
-    """
-    body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    # generate a session id
-    session_id = f"sess_{uuid.uuid4().hex[:12]}"
-    # init store
-    behavior_store[session_id] = []
-    # build ws url (frontend uses host same as API)
-    # if front-end is served from other host, adjust logic there
-    ws_scheme = "ws"
-    host = request.client.host if request.client else "127.0.0.1"
-    # prefer returning host:port of backend from request url base
-    # but provide simple default
-    # get base host:port from request.url
-    base = str(request.url).split(request.url.path)[0]
-    ws_url = base.replace("http", "ws") + "/behavior_ws?session_id=" + session_id
-    return {"session_id": session_id, "ws_url": ws_url}
-
-
-@app.websocket("/behavior_ws")
-async def behavior_ws(websocket: WebSocket):
-    """
-    WebSocket endpoint to receive behaviour events JSON as they stream from the frontend.
-    Frontend should connect to: ws://<api-host>:<port>/behavior_ws?session_id=<id>
-    Messages must be JSON objects representing events; we append them to behavior_store[session_id].
-    """
-    # fastapi WebSocket accepts connections but we will check session_id param
-    await websocket.accept()
-    try:
-        params = websocket.query_params
-        session_id = params.get("session_id")
-        if not session_id:
-            # require session id
-            await websocket.send_json({"error": "missing session_id query param"})
-            await websocket.close(code=1008)
-            return
-
-        # if not present, initialize as well
-        if session_id not in behavior_store:
-            behavior_store[session_id] = []
-
-        # Accept and receive messages loop
-        while True:
-            data = await websocket.receive_text()
-            # try parse as JSON
-            try:
-                evt = json.loads(data)
-            except Exception:
-                # ignore malformed messages but send a warning
-                try:
-                    await websocket.send_json({"warning": "malformed json"})
-                except Exception:
-                    pass
-                continue
-
-            # store event
-            behavior_store[session_id].append(evt)
-
-            # optional: echo ack (keeps client aware)
-            try:
-                await websocket.send_json({"ack": True, "received": len(behavior_store[session_id])})
-            except Exception:
-                pass
-
-    except WebSocketDisconnect:
-        # client disconnected
-        return
-    except Exception as e:
-        try:
-            await websocket.close()
-        except Exception:
-            pass
-        print("behavior_ws error:", e)
-        return
-    
 @app.post("/score")
 async def score_endpoint(req: Request, payload: ScoreRequest):
     """
@@ -405,10 +355,10 @@ async def score_endpoint(req: Request, payload: ScoreRequest):
 
     # Basic inputs
     applicant_id = payload.applicant_id or (body_client.get("applicant_id") if isinstance(body_client, dict) else None) or "anon"
-    session_id = payload.session_id or body_client.get("session_id") if isinstance(body_client, dict) else None
-    fp = payload.device_fingerprint or body_client.get("device_fingerprint") if isinstance(body_client, dict) else None
-    events = payload.behavior_events or body_client.get("behavior_events", [])
-    documents = payload.documents or body_client.get("documents", [])
+    session_id = payload.session_id or (body_client.get("session_id") if isinstance(body_client, dict) else None)
+    fp = payload.device_fingerprint or (body_client.get("device_fingerprint") if isinstance(body_client, dict) else None)
+    events = payload.behavior_events or (body_client.get("behavior_events", []) if isinstance(body_client, dict) else [])
+    documents = payload.documents or (body_client.get("documents", []) if isinstance(body_client, dict) else [])
 
     # 1) feature extraction
     extracted = simple_extract_features_from_events(events)
@@ -421,13 +371,11 @@ async def score_endpoint(req: Request, payload: ScoreRequest):
     reasons = []
 
     # device fingerprint basic check (demo-level)
-    # If metadata contains a demo fingerprint pattern we could check; otherwise produce neutral reason
     if fp:
         reasons.append({"type": "DEVICE_FP", "msg": "Fingerprint received", "fp": fp})
     else:
         reasons.append({"type": "DEVICE_FP", "msg": "No fingerprint provided"})
 
-    # behavior capture summary
     reasons.append({"type": "BEHAVIOR", "msg": f"events_captured:{extracted.get('events_count',0)}"})
 
     model_used = "none"
@@ -480,16 +428,13 @@ async def score_endpoint(req: Request, payload: ScoreRequest):
             print("LR scoring failed:", e)
 
     # Try anomaly detectors for anomaly signal (higher -> more anomalous)
-    # isoforest: predict_proba not always present; use score_samples (negative -> outlier)
     if "isoforest" in models:
         try:
             iso = models["isoforest"]
             if hasattr(iso, "score_samples"):
                 iso_score = float(iso.score_samples(vector)[0]) if vector is not None else None
-                # map iso_score to [0,1] anomaly severity (simple)
                 iso_severity = None
                 if iso_score is not None:
-                    # iso_score is higher for inliers; convert to anomaly probability
                     iso_severity = float(1.0 - (1.0 / (1.0 + abs(iso_score))))
                     scores["isoforest"] = iso_severity
                     reasons.append({"type":"ANOMALY","model":"isoforest","score":iso_severity,"msg":"IsolationForest produced anomaly score"})
@@ -500,25 +445,22 @@ async def score_endpoint(req: Request, payload: ScoreRequest):
         try:
             ae = models["autoencoder"]
             if hasattr(ae, "predict"):
-                # If autoencoder implemented as regressor - compute reconstruction error heuristic
                 rec = ae.predict(vector) if vector is not None else None
                 if rec is not None:
                     mse = float(np.mean((vector - rec) ** 2))
-                    # scale to 0-1 roughly
                     ae_sev = min(1.0, mse / (mse + 1.0))
                     scores["autoencoder"] = ae_sev
                     reasons.append({"type":"ANOMALY","model":"autoencoder","score":ae_sev,"msg":"Autoencoder reconstruction error"})
         except Exception as e:
             print("Autoencoder scoring failed:", e)
 
-    # If at least one discriminative score exists, build ensemble (weighted average)
+    # ensemble handling
     discriminative_keys = [k for k in ("rf", "lr") if k in scores]
     if discriminative_keys:
         vals = [scores[k] for k in discriminative_keys]
         final_score = float(sum(vals) / len(vals))
-        model_used = discriminative_keys[0]  # primary model for display
+        model_used = discriminative_keys[0]
     else:
-        # fallback: use anomaly severity if present
         if "isoforest" in scores:
             final_score = float(scores["isoforest"])
             model_used = "isoforest"
@@ -526,20 +468,17 @@ async def score_endpoint(req: Request, payload: ScoreRequest):
             final_score = float(scores["autoencoder"])
             model_used = "autoencoder"
         else:
-            # last resort heuristic: simple function of events_count and backspace frequency
             ev = extracted.get("events_count", 0)
             bs = extracted.get("backspace_count", 0)
-            heuristic = 1.0 - min(1.0, ev / 1000.0)  # fewer events -> higher suspicion
+            heuristic = 1.0 - min(1.0, ev / 1000.0)
             heuristic += min(1.0, bs / (ev + 1.0)) * 0.2
             final_score = max(0.0, min(1.0, heuristic / 1.2))
             model_used = "heuristic"
             reasons.append({"type":"MODEL","model":"heuristic","msg":"Fallback heuristic used"})
 
-    # Clip and label mapping
     final_score = float(max(0.0, min(1.0, final_score)))
     label = score_to_label(final_score)
 
-    # Prepare response
     resp = {
         "score": final_score,
         "risk_label": label,
@@ -549,7 +488,7 @@ async def score_endpoint(req: Request, payload: ScoreRequest):
         "session_id": session_id,
     }
 
-    # Persist the scored application
+    # Persist
     try:
         save_scored_application(
             applicant_id=applicant_id,
@@ -578,6 +517,53 @@ def officer_list(limit: int = 50):
         return {"count": len(rows), "results": rows}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# -------------------
+# Behavior endpoints & WebSocket
+# -------------------
+
+@app.post("/behavior/start")
+async def behavior_start(request: Request):
+    """
+    Start a behavior capture session. Returns a session id and demo fingerprint.
+    The frontend should call this prior to opening the websocket or posting captured events.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    # for demo: create a random session id and a demo fingerprint string
+    session_id = "sess_" + uuid.uuid4().hex[:12]
+    device_fp = "fp_demo_" + uuid.uuid4().hex[:8]
+    # optional: record that a session started (no persistence needed)
+    return {"session_id": session_id, "device_fingerprint": device_fp, "ok": True}
+
+@app.websocket("/behavior_ws")
+async def behavior_ws(websocket: WebSocket):
+    """
+    WebSocket endpoint that accepts JSON messages from the frontend behavior capture.
+    Each message is expected to be a JSON object representing an event or a batch.
+    The server broadcasts incoming messages to all connected websockets (demo).
+    """
+    await broadcaster.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            # Received data from frontend. We expect a dict like:
+            # { "session_id": "...", "event": {...} } or { "session_id": "...", "events": [...] }
+            if isinstance(data, dict):
+                # augment with server timestamp for demo visibility
+                data["_server_ts"] = time.time()
+                # broadcast to all connected clients
+                await broadcaster.send_json(data)
+            else:
+                # broadcast raw
+                await broadcaster.send_json({"payload": data, "_server_ts": time.time()})
+    except WebSocketDisconnect:
+        await broadcaster.disconnect(websocket)
+    except Exception:
+        await broadcaster.disconnect(websocket)
+        # swallow and exit
 
 # -------------------
 # Reload models endpoint (manual trigger)

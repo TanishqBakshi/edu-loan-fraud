@@ -1,41 +1,46 @@
+// ResultCard.tsx
 import React from "react";
 
-interface ResultCardProps {
-  result: any;
-}
-
-const ResultCard: React.FC<ResultCardProps> = ({ result }) => {
-  if (!result) return null;
-
-  return (
-    <div
-      style={{
-        background: "#111",
-        color: "#fff",
-        padding: "20px",
-        borderRadius: "12px",
-        marginTop: "16px",
-      }}
-    >
-      <h3>Fraud Score</h3>
-      <p>
-        Score: <strong>{result.score.toFixed(3)}</strong>
-      </p>
-      <p>
-        Risk label: <strong>{result.risk_label}</strong>
-      </p>
-      <p>Model used: {result.model_used}</p>
-      <h4>Reasons:</h4>
-      <ul>
-        {result.reasons &&
-          result.reasons.map((r: any, idx: number) => (
-            <li key={idx}>
-              [{r.type}] {r.msg}
-            </li>
-          ))}
-      </ul>
-    </div>
-  );
+type ResultCardProps = {
+  result: any | null;
 };
 
-export default ResultCard;
+export default function ResultCard({ result }: ResultCardProps) {
+  if (!result) {
+    return (
+      <div style={{ padding: 18, borderRadius: 8, background: "rgba(255,255,255,0.02)" }}>
+        <h3 style={{ marginTop: 0 }}>Fraud Score</h3>
+        <div style={{ color: "#9aa4b3" }}>No result yet — submit the form to see scoring & reasons.</div>
+      </div>
+    );
+  }
+
+  const { score, risk_label, model_used, reasons, scores_detail } = result;
+
+  return (
+    <div style={{ padding: 18, borderRadius: 8, background: "rgba(255,255,255,0.02)" }}>
+      <h3 style={{ marginTop: 0 }}>Fraud Score</h3>
+      <div style={{ fontSize: 36, fontWeight: 700 }}>{typeof score === "number" ? score : "--"}</div>
+      <div style={{ marginTop: 8 }}>
+        <strong>Risk label:</strong> {risk_label ?? "—"}
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <strong>Reasons</strong>
+        <ul>
+          {(reasons || []).map((r: any, i: number) => (
+            <li key={i}><strong>{r.type}</strong>: {r.msg || JSON.stringify(r)}</li>
+          ))}
+        </ul>
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <strong>Model</strong>
+        <div>{model_used ?? "unknown"}</div>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <strong>raw:</strong>
+        <pre style={{ background: "#0b0b0b", padding: 12, borderRadius: 8, overflow: "auto" }}>{JSON.stringify(result, null, 2)}</pre>
+      </div>
+    </div>
+  );
+}
