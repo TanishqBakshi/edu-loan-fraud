@@ -1,351 +1,599 @@
-# app.py - full file (copy & replace your existing api/app.py)
+# api/app.py
 import os
 import json
 import time
-from typing import List, Optional, Dict, Any
+import sqlite3
+import traceback
+from typing import Any, Dict, List, Optional, Tuple
+import uuid
 
-import joblib
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+import joblib
+import numpy as np
 
-# -----------------------
-# Models / file locations
-# -----------------------
-MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ml", "models"))
-MODEL_FILES = {
-    "rf": "rf.joblib",
-    "lr": "lr.joblib",
-    "autoencoder": "autoencoder.joblib",
-    "isoforest": "isoforest.joblib",
-}
-LOADED_MODELS: Dict[str, Any] = {}
+# -------------------
+# Config
+# -------------------
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+MODEL_DIR = os.path.join(ROOT_DIR, "ml", "models")
+DB_DIR = os.path.join(ROOT_DIR, "data")
+DB_PATH = os.path.join(DB_DIR, "scored_apps.db")
+METADATA_PATH = os.path.join(MODEL_DIR, "metadata.json")
 
-# -----------------------
-# FastAPI app + CORS
-# -----------------------
-app = FastAPI(title="Edu Loan Fraud API", description="Scoring + explainability endpoints for EDU loan demo")
+os.makedirs(DB_DIR, exist_ok=True)
 
-# CORS configuration (inserted here intentionally)
-origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    # add production origins here if needed, e.g. "https://dashboard.example.com"
-]
+# -------------------
+# App setup
+# -------------------
+app = FastAPI(title="Edu Loan Fraud - API (with persistence)")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,          # or ["*"] during development (not recommended for prod)
+    allow_origins=["*"],  # in prod, narrow this
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -----------------------
-# Pydantic request/response models
-# -----------------------
-class BehaviorSummary(BaseModel):
-    id: str = Field(..., alias="behavior_summary_id")
-    # We accept raw summary metadata here; frontend sends captured metrics
-    avg_hold_time: Optional[float] = None
-    std_hold: Optional[float] = None
-    backspace_freq: Optional[float] = None
-    interkey_mean: Optional[float] = None
-    mouse_jitter: Optional[float] = None
-    ocr_confidence: Optional[float] = None
-    device_fp_sim: Optional[float] = None
+# -------------------
+# DB helpers
+# -------------------
+def init_db():
+    """Create sqlite DB and scored_applications table if missing."""
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scored_applications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            applicant_id TEXT,
+            session_id TEXT,
+            fp TEXT,
+            ip TEXT,
+            created_at REAL,
+            score REAL,
+            risk_label TEXT,
+            model_used TEXT,
+            reasons_json TEXT,
+            raw_input_json TEXT,
+            raw_features_json TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
 
+def save_scored_application(
+    applicant_id: str,
+    session_id: Optional[str],
+    fp: Optional[str],
+    ip: Optional[str],
+    score: float,
+    risk_label: str,
+    model_used: str,
+    reasons: List[Dict[str, Any]],
+    raw_input: Dict[str, Any],
+    raw_features: Dict[str, Any],
+):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO scored_applications
+        (applicant_id, session_id, fp, ip, created_at, score, risk_label, model_used, reasons_json, raw_input_json, raw_features_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            applicant_id,
+            session_id,
+            fp,
+            ip,
+            time.time(),
+            float(score),
+            risk_label,
+            model_used,
+            json.dumps(reasons),
+            json.dumps(raw_input),
+            json.dumps(raw_features),
+        ),
+    )
+    conn.commit()
+    conn.close()
 
-class DocumentItem(BaseModel):
-    type: str
-    ocr_text: Optional[str]
-    ocr_confidence: Optional[int]
+def get_recent_scored(limit: int = 50) -> List[Dict[str, Any]]:
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, applicant_id, session_id, fp, ip, created_at, score, risk_label, model_used, reasons_json, raw_input_json, raw_features_json
+        FROM scored_applications
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    results = []
+    for r in rows:
+        results.append(
+            {
+                "id": r[0],
+                "applicant_id": r[1],
+                "session_id": r[2],
+                "fp": r[3],
+                "ip": r[4],
+                "created_at": r[5],
+                "score": r[6],
+                "risk_label": r[7],
+                "model_used": r[8],
+                "reasons": json.loads(r[9]) if r[9] else None,
+                "raw_input": json.loads(r[10]) if r[10] else None,
+                "raw_features": json.loads(r[11]) if r[11] else None,
+            }
+        )
+    return results
 
+# -------------------
+# Models & metadata loading
+# -------------------
+models = {}
+metadata = {}
 
-class ApplicationSubmission(BaseModel):
-    applicant_id: str
-    name: str
-    dob: str
-    email: str
-    phone: str
-    documents: List[DocumentItem] = []
-    behavior_summary_id: Optional[str] = None
-    device_fingerprint: Optional[str] = None
-    # allow extra fields for future expansion
-    class Config:
-        extra = "allow"
-
-
-class ScoreResult(BaseModel):
-    model_scores: Dict[str, float]
-    final_score: float
-    reasons: List[Dict[str, Any]] = []
-    model_versions: Dict[str, str] = {}
-
-
-# -----------------------
-# Utilities - load models
-# -----------------------
-def load_models():
-    global LOADED_MODELS
-    LOADED_MODELS = {}
-    # try to load each expected model file if present
-    for key, fname in MODEL_FILES.items():
-        path = os.path.join(MODEL_DIR, fname)
-        if os.path.isfile(path):
+def load_models_and_metadata():
+    global models, metadata
+    models = {}
+    metadata = {}
+    # load metadata if exists
+    if os.path.exists(METADATA_PATH):
+        try:
+            with open(METADATA_PATH, "r") as f:
+                metadata = json.load(f)
+        except Exception:
+            metadata = {}
+    # load standard models
+    for name in ["rf", "lr", "isoforest", "autoencoder"]:
+        path = os.path.join(MODEL_DIR, f"{name}.joblib")
+        if os.path.exists(path):
             try:
                 obj = joblib.load(path)
-                LOADED_MODELS[key] = obj
-                print(f"Loaded {key} model from {path}")
+                models[name] = obj
+                print(f"Loaded {name} model from {path}")
             except Exception as e:
-                LOADED_MODELS[key] = None
-                print(f"Failed to load {key} from {path}: {repr(e)}")
+                print(f"Failed to load {name} from {path}: {e}")
         else:
-            LOADED_MODELS[key] = None
-            print(f"Model file not found for {key}: expected {path}")
+            # missing — that's fine; we fallback at scoring
+            pass
 
-
-# run at import
-load_models()
-
-
-# -----------------------
-# Health / root endpoint
-# -----------------------
-@app.get("/")
-def root():
-    loaded = {k: (v is not None) for k, v in LOADED_MODELS.items()}
-    return {"message": "Edu Loan Fraud API is running", "model_loaded": loaded}
-
-
-# -----------------------
-# small helper: basic input validation for required fields
-# -----------------------
-def validate_submission(payload: dict):
-    required = ["applicant_id", "name", "dob", "email", "phone"]
-    missing = [r for r in required if r not in payload or payload[r] in (None, "")]
-    if missing:
-        raise HTTPException(status_code=422, detail=[{"type": "missing", "loc": ["body"] , "msg": "Field required", "input": payload, "missing": missing}])
-
-    # ensure device fingerprint present (frontend will include fp)
-    # Note: per your request you want a "basic fingerprint check" only; we accept whatever is sent
-    if "device_fingerprint" not in payload or not payload["device_fingerprint"]:
-        # we do not block submission for no fingerprint, but we'll note it
-        pass
-
-
-# -----------------------
-# Scoring helpers - simplistic
-# -----------------------
-def make_feature_vector(sub: ApplicationSubmission) -> Dict[str, float]:
-    # Create a simple vector from available behavior features / docs
-    # This is intentionally shallow — your ML pipeline normally expects exact feature ordering and normalization.
-    # Here we create a best-effort dict that your saved scikit pipelines should be able to accept as a single-row DF.
-    vec = {
+# -------------------
+# Small feature extraction helper
+# -------------------
+def simple_extract_features_from_events(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Produce a minimal set of features derived from behavior events.
+    This is intentionally simple — in your production pipeline replace with the
+    same feature extraction used in training and listed in metadata['feature_columns'].
+    """
+    features = {
+        "events_count": 0,
+        "keydown_count": 0,
+        "keyup_count": 0,
+        "mouse_move": 0,
+        "clicks": 0,
+        "backspace_count": 0,
         "avg_hold_time": None,
-        "std_hold": None,
-        "backspace_freq": None,
-        "interkey_mean": None,
-        "mouse_jitter": None,
-        "ocr_confidence": None,
-        "device_fp_sim": None,
+        "avg_interkey": None,
     }
-    # If the frontend included a behavior_summary object in the payload, use it (some clients POST it inline)
-    if hasattr(sub, "__dict__") and sub.behavior_summary_id:
-        # real features should be assembled from the aggregated event store.
-        # For demo purposes we leave them None or 0 so pipelines won't crash.
-        pass
-    # fill defaults (0 instead of None to avoid model predict errors)
-    for k in list(vec.keys()):
-        if vec[k] is None:
-            vec[k] = 0.0
-    return vec
+    hold_times = []
+    inter_times = []
+    last_ts = None
+    for ev in events or []:
+        features["events_count"] += 1
+        t = ev.get("type", "")
+        ts = ev.get("ts", None)
+        if t == "keydown":
+            features["keydown_count"] += 1
+            key = ev.get("key", "")
+            if key in ("Backspace", "Delete"):
+                features["backspace_count"] += 1
+            if last_ts is not None and ts is not None:
+                inter_times.append(max(0, ts - last_ts))
+        elif t == "keyup":
+            features["keyup_count"] += 1
+        elif t == "mousemove":
+            features["mouse_move"] += 1
+        elif t in ("click", "mousedown"):
+            features["clicks"] += 1
+        if "hold" in ev:
+            hold_times.append(ev["hold"])
+        if ts is not None:
+            last_ts = ts
+    features["avg_hold_time"] = (sum(hold_times) / len(hold_times)) if hold_times else 0.0
+    features["avg_interkey"] = (sum(inter_times) / len(inter_times)) if inter_times else 0.0
+    return features
 
-
-def safe_predict_proba(model, X_row):
+# -------------------
+# Utilities: attempt to build an ordered ndarray for model predict
+# -------------------
+def build_feature_vector_from_input(raw_input: Dict[str, Any], extracted_feats: Dict[str, Any]) -> Tuple[Optional[np.ndarray], Optional[Dict[str, Any]]]:
     """
-    If model has predict_proba, return probability for positive class.
-    If model only has decision_function or predict, try to convert to 0-1.
-    If unavailable, raise ValueError.
+    Use metadata['feature_columns'] if present; otherwise create a small vector from `extracted_feats`.
+    Returns (vector_or_None, features_dict_used)
     """
+    # If metadata lists feature_columns, try to assemble in that order
+    feat_dict = {}
     try:
-        if hasattr(model, "predict_proba"):
-            # sklearn classifiers return [[p0, p1]]
-            probs = model.predict_proba([X_row])
-            # if two columns, return second col; else try last column
-            if probs.shape[1] >= 2:
-                return float(probs[0, 1])
-            else:
-                return float(probs[0, -1])
-        elif hasattr(model, "predict"):
-            pred = model.predict([X_row])
-            return float(pred[0])
-        elif hasattr(model, "decision_function"):
-            df = model.decision_function([X_row])
-            # map decision function to a 0-1 by logistic transform for display
-            import math
-            s = 1.0 / (1.0 + math.exp(-float(df[0])))
-            return s
-        else:
-            raise ValueError("Model has no prediction method")
+        if metadata and "feature_columns" in metadata:
+            cols = metadata.get("feature_columns", [])
+            for c in cols:
+                # main sources: extracted behavior features OR top-level fields in input
+                if c in extracted_feats:
+                    feat_dict[c] = extracted_feats[c]
+                elif c in raw_input:
+                    # numeric cast where possible
+                    try:
+                        feat_dict[c] = float(raw_input[c])
+                    except Exception:
+                        feat_dict[c] = 0.0
+                else:
+                    feat_dict[c] = 0.0
+            arr = np.array([feat_dict[c] for c in cols], dtype=float).reshape(1, -1)
+            return arr, feat_dict
     except Exception as e:
-        raise
+        print("Failed to build vector from metadata feature_columns:", e)
+    # Fallback: use a small hand-crafted ordering
+    fallback_order = [
+        "events_count", "keydown_count", "keyup_count",
+        "clicks", "mouse_move", "backspace_count",
+        "avg_hold_time", "avg_interkey"
+    ]
+    for c in fallback_order:
+        feat_dict[c] = float(extracted_feats.get(c, 0.0) or 0.0)
+    arr = np.array([feat_dict[c] for c in fallback_order], dtype=float).reshape(1, -1)
+    return arr, feat_dict
 
+# -------------------
+# Risk label mapping helper
+# -------------------
+def score_to_label(score: float) -> str:
+    if score >= 0.75:
+        return "HIGH"
+    if score >= 0.4:
+        return "MEDIUM"
+    return "LOW"
 
-# -----------------------
-# POST /score endpoint
-# -----------------------
-@app.post("/score")
-async def score_application(submission: ApplicationSubmission, request: Request):
-    # Basic validation
+# -------------------
+# Startup: init DB & load models
+# -------------------
+init_db()
+load_models_and_metadata()
+
+# -------------------
+# Pydantic model for request
+# -------------------
+class ScoreRequest(BaseModel):
+    applicant_id: Optional[str]
+    name: Optional[str]
+    dob: Optional[str]
+    email: Optional[str]
+    phone: Optional[str]
+    documents: Optional[List[Dict[str, Any]]] = []
+    behavior_events: Optional[List[Dict[str, Any]]] = []
+    behavior_summary_id: Optional[str] = None
+    device_fingerprint: Optional[str] = None
+    session_id: Optional[str] = None
+
+# -------------------
+# API endpoints
+# -------------------
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "models_loaded": list(models.keys()), "metadata": bool(metadata)}
+
+# -------------------
+# Minimal behavior capture endpoints (start + websocket)
+# -------------------
+
+# in-memory store for captured event lists per session id
+# Note: for the demo we use memory; for production persist to DB or buffer/store
+behavior_store: Dict[str, List[Dict[str, Any]]] = {}
+
+@app.post("/behavior/start")
+async def behavior_start(request: Request):
+    """
+    Start a behavior capture session.
+    Frontend sends a POST to this to acquire a session_id to open websocket.
+    Returns: { session_id: "...", ws_url: "ws://..." }.
+    """
+    body = {}
     try:
-        validate_submission(submission.dict(by_alias=True))
-    except HTTPException as he:
-        # re-raise so FastAPI returns structured 422
-        raise he
+        body = await request.json()
+    except Exception:
+        body = {}
+    # generate a session id
+    session_id = f"sess_{uuid.uuid4().hex[:12]}"
+    # init store
+    behavior_store[session_id] = []
+    # build ws url (frontend uses host same as API)
+    # if front-end is served from other host, adjust logic there
+    ws_scheme = "ws"
+    host = request.client.host if request.client else "127.0.0.1"
+    # prefer returning host:port of backend from request url base
+    # but provide simple default
+    # get base host:port from request.url
+    base = str(request.url).split(request.url.path)[0]
+    ws_url = base.replace("http", "ws") + "/behavior_ws?session_id=" + session_id
+    return {"session_id": session_id, "ws_url": ws_url}
 
-    # Build feature vector for the models (the real pipeline uses a DataFrame with exact columns)
-    features = make_feature_vector(submission)
 
-    # For demonstration we will attempt to pass a single-row dict to models directly.
-    # Your actual trained pipelines may expect a DataFrame; adjust accordingly if necessary.
-    X_row = list(features.values())
+@app.websocket("/behavior_ws")
+async def behavior_ws(websocket: WebSocket):
+    """
+    WebSocket endpoint to receive behaviour events JSON as they stream from the frontend.
+    Frontend should connect to: ws://<api-host>:<port>/behavior_ws?session_id=<id>
+    Messages must be JSON objects representing events; we append them to behavior_store[session_id].
+    """
+    # fastapi WebSocket accepts connections but we will check session_id param
+    await websocket.accept()
+    try:
+        params = websocket.query_params
+        session_id = params.get("session_id")
+        if not session_id:
+            # require session id
+            await websocket.send_json({"error": "missing session_id query param"})
+            await websocket.close(code=1008)
+            return
 
-    model_scores = {}
+        # if not present, initialize as well
+        if session_id not in behavior_store:
+            behavior_store[session_id] = []
+
+        # Accept and receive messages loop
+        while True:
+            data = await websocket.receive_text()
+            # try parse as JSON
+            try:
+                evt = json.loads(data)
+            except Exception:
+                # ignore malformed messages but send a warning
+                try:
+                    await websocket.send_json({"warning": "malformed json"})
+                except Exception:
+                    pass
+                continue
+
+            # store event
+            behavior_store[session_id].append(evt)
+
+            # optional: echo ack (keeps client aware)
+            try:
+                await websocket.send_json({"ack": True, "received": len(behavior_store[session_id])})
+            except Exception:
+                pass
+
+    except WebSocketDisconnect:
+        # client disconnected
+        return
+    except Exception as e:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        print("behavior_ws error:", e)
+        return
+    
+@app.post("/score")
+async def score_endpoint(req: Request, payload: ScoreRequest):
+    """
+    Score an application and persist the scored result to the sqlite DB.
+    Returns JSON with score, risk_label, reasons, model info.
+    """
+    try:
+        body_client = await req.json()
+    except Exception:
+        body_client = payload.dict()
+
+    # extract client ip
+    client_host = None
+    try:
+        client_host = req.client.host
+    except Exception:
+        client_host = "unknown"
+
+    # Basic inputs
+    applicant_id = payload.applicant_id or (body_client.get("applicant_id") if isinstance(body_client, dict) else None) or "anon"
+    session_id = payload.session_id or body_client.get("session_id") if isinstance(body_client, dict) else None
+    fp = payload.device_fingerprint or body_client.get("device_fingerprint") if isinstance(body_client, dict) else None
+    events = payload.behavior_events or body_client.get("behavior_events", [])
+    documents = payload.documents or body_client.get("documents", [])
+
+    # 1) feature extraction
+    extracted = simple_extract_features_from_events(events)
+
+    # 2) attempt to build feature vector that matches training
+    vector, used_features = build_feature_vector_from_input(body_client if isinstance(body_client, dict) else payload.dict(), extracted)
+
+    # 3) scoring - try to use RF if present, else LR, else anomaly
+    scores = {}
     reasons = []
 
-    # 1) Logistic Regression
-    lr = LOADED_MODELS.get("lr")
-    if lr:
-        try:
-            p = safe_predict_proba(lr, X_row)
-            model_scores["lr"] = p
-            # add simple reason extraction: coef weights (best-effort)
-            try:
-                if hasattr(lr, "coef_"):
-                    # grab largest absolute coefficient feature as reason (demo)
-                    import numpy as np
-                    coefs = np.array(lr.coef_).ravel()
-                    idx = int(np.argmax(np.abs(coefs)))
-                    feat_name = list(features.keys())[idx] if idx < len(features) else "feature"
-                    reasons.append({"source": "lr", "code": "LR_TOP_FEATURE", "explanation": f"Top LR feature: {feat_name}"})
-            except Exception:
-                pass
-        except Exception as e:
-            reasons.append({"source": "lr", "code": "LR_ERROR", "explanation": f"LR predict failed: {repr(e)}"})
+    # device fingerprint basic check (demo-level)
+    # If metadata contains a demo fingerprint pattern we could check; otherwise produce neutral reason
+    if fp:
+        reasons.append({"type": "DEVICE_FP", "msg": "Fingerprint received", "fp": fp})
     else:
-        reasons.append({"source": "lr", "code": "LR_MISSING", "explanation": "Logistic Regression model not loaded"})
+        reasons.append({"type": "DEVICE_FP", "msg": "No fingerprint provided"})
 
-    # 2) Random Forest
-    rf = LOADED_MODELS.get("rf")
-    if rf:
-        try:
-            p = safe_predict_proba(rf, X_row)
-            model_scores["rf"] = p
-            # simple feature importance reason
-            try:
-                if hasattr(rf, "feature_importances_"):
-                    import numpy as np
-                    fi = np.array(rf.feature_importances_)
-                    idx = int(np.argmax(fi))
-                    feat_name = list(features.keys())[idx] if idx < len(features) else "feature"
-                    reasons.append({"source": "rf", "code": "RF_TOP_FEATURE", "explanation": f"Top RF feature: {feat_name}"})
-            except Exception:
-                pass
-        except Exception as e:
-            reasons.append({"source": "rf", "code": "RF_ERROR", "explanation": f"RF predict failed: {repr(e)}"})
-    else:
-        reasons.append({"source": "rf", "code": "RF_MISSING", "explanation": "Random Forest model not loaded"})
+    # behavior capture summary
+    reasons.append({"type": "BEHAVIOR", "msg": f"events_captured:{extracted.get('events_count',0)}"})
 
-    # 3) Anomaly detectors (IsoForest + Autoencoder)
-    # IsoForest - typically lower means more anomalous; here we invert and scale to 0-1
-    isof = LOADED_MODELS.get("isoforest")
-    if isof:
+    model_used = "none"
+    final_score = 0.0
+
+    # Helper to safe predict_proba
+    def safe_predict_proba(m, vec):
         try:
-            if hasattr(isof, "decision_function"):
-                score = float(isof.decision_function([X_row])[0])
-                # normalize loosely to 0-1 via logistic-ish
-                import math
-                iso_prob = 1.0 / (1.0 + math.exp(-score))
-                model_scores["isoforest"] = iso_prob
-                reasons.append({"source": "isoforest", "code": "ANOMALY", "explanation": "Anomaly detector produced a score"})
+            if hasattr(m, "predict_proba"):
+                p = m.predict_proba(vec)
+                # if binary classification, take positive class prob
+                if p.shape[1] >= 2:
+                    return float(p[0, 1])
+                else:
+                    return float(p[0, 0])
             else:
-                model_scores["isoforest"] = 0.0
+                # fallback to decision_function or predict
+                if hasattr(m, "decision_function"):
+                    df = m.decision_function(vec)
+                    return float((df - df.min()) / (df.max() - df.min() + 1e-9)) if np.ndim(df)>0 else float(df)
+                elif hasattr(m, "predict"):
+                    pr = m.predict(vec)
+                    return float(pr[0])
         except Exception as e:
-            reasons.append({"source": "isoforest", "code": "ISO_ERROR", "explanation": f"IsoForest failed: {repr(e)}"})
-    else:
-        reasons.append({"source": "isoforest", "code": "ISO_MISSING", "explanation": "IsoForest model not loaded"})
+            print("safe_predict_proba error:", e)
+        return None
 
-    auto = LOADED_MODELS.get("autoencoder")
-    if auto:
+    # Try random forest
+    if "rf" in models and vector is not None:
         try:
-            # if the autoencoder returns reconstruction error, we can map to anomaly probability
-            if hasattr(auto, "predict"):
-                rec = auto.predict([X_row])
-                # simple mapping -> anomaly prob (demo only)
-                import numpy as np, math
-                # compute L2 recon error
-                err = float(np.linalg.norm(np.array(X_row) - np.array(rec).ravel()))
-                a_prob = 1.0 / (1.0 + math.exp(-err))
-                model_scores["autoencoder"] = a_prob
-                reasons.append({"source": "autoencoder", "code": "RECON_ERR", "explanation": "Autoencoder reconstruction anomaly score used"})
-            else:
-                model_scores["autoencoder"] = 0.0
+            rf = models["rf"]
+            p_rf = safe_predict_proba(rf, vector)
+            if p_rf is not None:
+                scores["rf"] = p_rf
+                model_used = "rf"
+                reasons.append({"type":"MODEL","model":"rf","msg":"RandomForest produced a probability"})
         except Exception as e:
-            reasons.append({"source": "autoencoder", "code": "AUTO_ERROR", "explanation": f"Autoencoder failed: {repr(e)}"})
+            print("RF scoring failed:", e)
+
+    # Try logistic regression if rf not present
+    if "lr" in models and ("rf" not in scores or scores.get("rf") is None):
+        try:
+            lr = models["lr"]
+            p_lr = safe_predict_proba(lr, vector)
+            if p_lr is not None:
+                scores["lr"] = p_lr
+                model_used = "lr"
+                reasons.append({"type":"MODEL","model":"lr","msg":"Logistic Regression produced a probability"})
+        except Exception as e:
+            print("LR scoring failed:", e)
+
+    # Try anomaly detectors for anomaly signal (higher -> more anomalous)
+    # isoforest: predict_proba not always present; use score_samples (negative -> outlier)
+    if "isoforest" in models:
+        try:
+            iso = models["isoforest"]
+            if hasattr(iso, "score_samples"):
+                iso_score = float(iso.score_samples(vector)[0]) if vector is not None else None
+                # map iso_score to [0,1] anomaly severity (simple)
+                iso_severity = None
+                if iso_score is not None:
+                    # iso_score is higher for inliers; convert to anomaly probability
+                    iso_severity = float(1.0 - (1.0 / (1.0 + abs(iso_score))))
+                    scores["isoforest"] = iso_severity
+                    reasons.append({"type":"ANOMALY","model":"isoforest","score":iso_severity,"msg":"IsolationForest produced anomaly score"})
+        except Exception as e:
+            print("Iso scoring failed:", e)
+
+    if "autoencoder" in models:
+        try:
+            ae = models["autoencoder"]
+            if hasattr(ae, "predict"):
+                # If autoencoder implemented as regressor - compute reconstruction error heuristic
+                rec = ae.predict(vector) if vector is not None else None
+                if rec is not None:
+                    mse = float(np.mean((vector - rec) ** 2))
+                    # scale to 0-1 roughly
+                    ae_sev = min(1.0, mse / (mse + 1.0))
+                    scores["autoencoder"] = ae_sev
+                    reasons.append({"type":"ANOMALY","model":"autoencoder","score":ae_sev,"msg":"Autoencoder reconstruction error"})
+        except Exception as e:
+            print("Autoencoder scoring failed:", e)
+
+    # If at least one discriminative score exists, build ensemble (weighted average)
+    discriminative_keys = [k for k in ("rf", "lr") if k in scores]
+    if discriminative_keys:
+        vals = [scores[k] for k in discriminative_keys]
+        final_score = float(sum(vals) / len(vals))
+        model_used = discriminative_keys[0]  # primary model for display
     else:
-        reasons.append({"source": "autoencoder", "code": "AUTO_MISSING", "explanation": "Autoencoder model not loaded"})
+        # fallback: use anomaly severity if present
+        if "isoforest" in scores:
+            final_score = float(scores["isoforest"])
+            model_used = "isoforest"
+        elif "autoencoder" in scores:
+            final_score = float(scores["autoencoder"])
+            model_used = "autoencoder"
+        else:
+            # last resort heuristic: simple function of events_count and backspace frequency
+            ev = extracted.get("events_count", 0)
+            bs = extracted.get("backspace_count", 0)
+            heuristic = 1.0 - min(1.0, ev / 1000.0)  # fewer events -> higher suspicion
+            heuristic += min(1.0, bs / (ev + 1.0)) * 0.2
+            final_score = max(0.0, min(1.0, heuristic / 1.2))
+            model_used = "heuristic"
+            reasons.append({"type":"MODEL","model":"heuristic","msg":"Fallback heuristic used"})
 
-    # Compose final score (weighted average of available model scores)
-    available = [v for v in model_scores.values() if v is not None]
-    if available:
-        final_score = sum(available)/len(available)
-    else:
-        final_score = 0.0
-        reasons.append({"source": "system", "code": "NO_MODELS", "explanation": "No scoring models available"})
+    # Clip and label mapping
+    final_score = float(max(0.0, min(1.0, final_score)))
+    label = score_to_label(final_score)
 
-    # Additional logic: basic device fingerprint check (basic fingerprint history check disabled per request)
-    # We only mark an alert if device_fingerprint is missing OR matches known suspicious token (demo)
-    if not submission.device_fingerprint:
-        reasons.append({"source": "device_fp", "code": "NO_FP", "explanation": "No device fingerprint provided"})
-    else:
-        # demo rule: if fingerprint equals string "fp_demo" it's low confidence (this is just demo logic)
-        if submission.device_fingerprint == "fp_demo":
-            reasons.append({"source": "device_fp", "code": "FP_PLACEHOLDER", "explanation": "Placeholder fingerprint (demo) used"})
+    # Prepare response
+    resp = {
+        "score": final_score,
+        "risk_label": label,
+        "model_used": model_used,
+        "scores_detail": scores,
+        "reasons": reasons,
+        "session_id": session_id,
+    }
 
-    # time-based suspicious login example - front-end should send metadata; this is a placeholder example
-    # (You mentioned time detection across countries; that requires storing last login timestamps per account and comparing).
-    # Here we just add a placeholder explanation entry.
-    # reasons.append({"source":"temporal","code":"TIME_CHECK","explanation":"Temporal login check not implemented on server side (requires history store)"})
+    # Persist the scored application
+    try:
+        save_scored_application(
+            applicant_id=applicant_id,
+            session_id=session_id,
+            fp=fp,
+            ip=client_host,
+            score=final_score,
+            risk_label=label,
+            model_used=model_used,
+            reasons=reasons,
+            raw_input=body_client if isinstance(body_client, dict) else payload.dict(),
+            raw_features=used_features or extracted,
+        )
+    except Exception as e:
+        print("Failed to save scored application:", e, traceback.format_exc())
 
-    # Build response
-    resp = ScoreResult(
-        model_scores=model_scores,
-        final_score=final_score,
-        reasons=reasons,
-        model_versions={k: ("loaded" if LOADED_MODELS.get(k) else "missing") for k in MODEL_FILES.keys()}
-    )
+    return resp
 
-    return JSONResponse(status_code=200, content=resp.dict())
+@app.get("/officer/list")
+def officer_list(limit: int = 50):
+    """
+    Return recent scored applications for a simple officer dashboard.
+    """
+    try:
+        rows = get_recent_scored(limit)
+        return {"count": len(rows), "results": rows}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-# -----------------------
-# Enable reloading of models on demand (optional admin endpoint)
-# -----------------------
-@app.post("/admin/reload-models")
-def admin_reload_models():
-    load_models()
-    return {"reloaded": {k: (LOADED_MODELS[k] is not None) for k in LOADED_MODELS.keys()}}
+# -------------------
+# Reload models endpoint (manual trigger)
+# -------------------
+@app.post("/models/reload")
+def reload_models():
+    try:
+        load_models_and_metadata()
+        return {"status": "ok", "models": list(models.keys()), "metadata_present": bool(metadata)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# -----------------------
-# On startup, log the model status
-# -----------------------
-@app.on_event("startup")
-def startup_event():
-    # If ml/models directory doesn't exist, print helpful message
-    if not os.path.isdir(MODEL_DIR):
-        print(f"Warning: model directory {MODEL_DIR} does not exist. Create it and put model joblib files there.")
-    print("Application startup complete. Model status:")
-    for k, v in LOADED_MODELS.items():
-        print(f"  {k}: {'loaded' if v is not None else 'missing / failed'}")
+# -------------------
+# Run with: uvicorn api.app:app --reload
+# -------------------
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api.app:app", host="127.0.0.1", port=8000, reload=True)

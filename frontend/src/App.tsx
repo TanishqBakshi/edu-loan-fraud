@@ -1,54 +1,56 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
+import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
 import BehaviorCapture from "./components/BehaviorCapture";
 import LoanForm from "./components/LoanForm";
 import ResultCard from "./components/ResultCard";
-import "./App.css";
+import OfficerDashboard from "./components/OfficerDashboard";
 
 export default function App() {
-  const [result, setResult] = useState<any | null>(null);
-
-  useEffect(() => {
-    // Listen for result updates from LoanForm
-    function handleScoreEvent(e: any) {
-      setResult(e.detail);
-    }
-
-    window.addEventListener("scoreResult", handleScoreEvent);
-
-    // Load last score if available
-    const last = localStorage.getItem("last_score");
-    if (last) {
-      try {
-        setResult(JSON.parse(last));
-      } catch {}
-    }
-
-    return () => {
-      window.removeEventListener("scoreResult", handleScoreEvent);
-    };
-  }, []);
+  const [behaviorData, setBehaviorData] = useState<any[]>([]);
+  const [result, setResult] = useState<any>(null);
 
   return (
-    <div className="App dark">
-      <header>
-        <h1>Student Loan Application — Demo (Dark)</h1>
+    <Router>
+      <header
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "12px 24px",
+          background: "#000",
+          color: "#fff",
+        }}
+      >
+        <h2>Edu Loan — Application</h2>
+        <nav>
+          <Link to="/" style={{ color: "#bfc", marginRight: "16px" }}>
+            Student
+          </Link>
+          <Link to="/officer" style={{ color: "#bfc" }}>
+            Officer
+          </Link>
+        </nav>
       </header>
 
-      <main style={{ display: "flex", justifyContent: "center", padding: "40px" }}>
-        <div style={{ flex: 1, maxWidth: 600 }}>
-          <BehaviorCapture />
-          <LoanForm onResult={setResult} />
-        </div>
-
-        <aside style={{ width: 420, marginLeft: 24 }}>
-          <ResultCard result={result} />
-        </aside>
+      <main style={{ padding: "24px" }}>
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <div style={{ display: "flex", gap: "24px" }}>
+                <div style={{ flex: 1 }}>
+                  <BehaviorCapture onBehaviorData={setBehaviorData} />
+                  <LoanForm behaviorData={behaviorData} onResult={setResult} />
+                </div>
+                <div style={{ width: "420px" }}>
+                  <ResultCard result={result} />
+                </div>
+              </div>
+            }
+          />
+          <Route path="/officer" element={<OfficerDashboard />} />
+        </Routes>
       </main>
-
-      <footer style={{ textAlign: "center", padding: "16px", opacity: 0.6 }}>
-        Local demo — connect backend at{" "}
-        <code>http://localhost:8000</code>
-      </footer>
-    </div>
+    </Router>
   );
 }
